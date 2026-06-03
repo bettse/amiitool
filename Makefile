@@ -56,6 +56,12 @@ gitversion.h:
 mbedtls: $(MBEDTLS_CONFIG)
 	"$(MAKE)" lib -C $(MBEDTLS_DIR) CFLAGS="$(MBEDTLS_CFLAGS)"
 
+# Run regression tests
+test: $(BINS)
+	sh $(PWD)/tests/run_tests.sh
+
+.PHONY: test
+
 # Clean targets
 clean: mostlyclean
 	$(MAKE) -C $(MBEDTLS_DIR) clean
