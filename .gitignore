@@ -13,3 +13,7 @@
 
 # Ignore version files
 /gitversion.h
+
+# Ignore amiibo keys and sample dumps
+/key_retail.bin
+/samples/
