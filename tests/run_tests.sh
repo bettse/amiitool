@@ -1,9 +1,9 @@
 #!/bin/sh
 # Regression tests for amiitool.
 #
-# Only NTAG215 dumps are exercised here; the larger NTAG I2C Plus samples in
-# samples/ are kept as fixtures for future support work and are intentionally
-# not asserted against yet.
+# Covers the supported tag shapes: NTAG215 and NTAG I2C Plus 2K ("v3", as used
+# by the Kirby Air Riders amiibo). The NTAG I2C Plus 1K sample in samples/ is
+# kept as a fixture but is not yet supported and is not asserted here.
 set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
@@ -20,44 +20,53 @@ die()  { printf 'FAIL - %s\n' "$1"; fail=1; }
 [ -x "$AMIITOOL" ] || { echo "amiitool not built; run 'make' first" >&2; exit 1; }
 [ -f "$KEY" ] || { echo "missing key_retail.bin" >&2; exit 1; }
 
-# --- NTAG215 fixture ------------------------------------------------------
-SAMPLE="$ROOT/samples/Yarn.nfc"
-BIN="$WORK/Yarn.bin"
-DEC="$WORK/Yarn.dec"
-REENC="$WORK/Yarn.reenc"
-DEC2="$WORK/Yarn.dec2"
+# Exercise a sample end to end: convert, strict decrypt, round-trip and
+# deterministic decrypt. $1=label $2=sample.nfc $3=expected byte size.
+check_sample() {
+	label=$1
+	sample=$2
+	want_size=$3
+	bin="$WORK/$label.bin"
+	dec="$WORK/$label.dec"
+	reenc="$WORK/$label.reenc"
+	dec2="$WORK/$label.dec2"
 
-python3 "$CONV" "$SAMPLE" "$BIN"
+	python3 "$CONV" "$sample" "$bin"
 
-# An NTAG215 dump is exactly 135 pages = 540 bytes.
-if [ "$(wc -c < "$BIN")" -eq 540 ]; then
-	pass "Yarn converts to a 540-byte NTAG215 dump"
-else
-	die "Yarn dump is not 540 bytes (got $(wc -c < "$BIN"))"
-fi
+	if [ "$(wc -c < "$bin")" -eq "$want_size" ]; then
+		pass "$label converts to a $want_size-byte dump"
+	else
+		die "$label dump is not $want_size bytes (got $(wc -c < "$bin"))"
+		return
+	fi
 
-# Decrypt must succeed in strict mode (signatures valid).
-if "$AMIITOOL" -d -k "$KEY" -i "$BIN" -o "$DEC" 2>/dev/null; then
-	pass "Yarn decrypts with valid signature (strict mode)"
-else
-	die "Yarn failed strict decrypt"
-fi
+	if "$AMIITOOL" -d -k "$KEY" -i "$bin" -o "$dec" 2>/dev/null; then
+		pass "$label decrypts with valid signature (strict mode)"
+	else
+		die "$label failed strict decrypt"
+		return
+	fi
 
-# Round-trip: re-encrypting the plaintext reproduces the original tag.
-"$AMIITOOL" -e -k "$KEY" -i "$DEC" -o "$REENC" 2>/dev/null
-if cmp -s "$BIN" "$REENC"; then
-	pass "Yarn round-trips (encrypt(decrypt(x)) == x)"
-else
-	die "Yarn round-trip mismatch"
-fi
+	"$AMIITOOL" -e -k "$KEY" -i "$dec" -o "$reenc" 2>/dev/null
+	if cmp -s "$bin" "$reenc"; then
+		pass "$label round-trips (encrypt(decrypt(x)) == x, all $want_size bytes)"
+	else
+		die "$label round-trip mismatch"
+	fi
 
-# Decrypt is deterministic / idempotent.
-"$AMIITOOL" -d -k "$KEY" -i "$REENC" -o "$DEC2" 2>/dev/null
-if cmp -s "$DEC" "$DEC2"; then
-	pass "Yarn decrypt is deterministic"
-else
-	die "Yarn decrypt is not deterministic"
-fi
+	"$AMIITOOL" -d -k "$KEY" -i "$reenc" -o "$dec2" 2>/dev/null
+	if cmp -s "$dec" "$dec2"; then
+		pass "$label decrypt is deterministic"
+	else
+		die "$label decrypt is not deterministic"
+	fi
+}
+
+# NTAG215: 135 pages = 540 bytes.
+check_sample "Yarn" "$ROOT/samples/Yarn.nfc" 540
+
+# NTAG I2C Plus 2K ("v3"): Flipper dump is 492 pages = 1968 bytes.
+check_sample "Kirby" "$ROOT/samples/Kirby.nfc" 1968
 
 # -------------------------------------------------------------------------
 if [ "$fail" -ne 0 ]; then
