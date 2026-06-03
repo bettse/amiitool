@@ -1,9 +1,8 @@
 #!/bin/sh
 # Regression tests for amiitool.
 #
-# Covers the supported tag shapes: NTAG215 and NTAG I2C Plus 2K ("v3", as used
-# by the Kirby Air Riders amiibo). The NTAG I2C Plus 1K sample in samples/ is
-# kept as a fixture but is not yet supported and is not asserted here.
+# Covers the supported tag shapes: NTAG215, NTAG I2C Plus 1K (v2 data, standard
+# offsets) and NTAG I2C Plus 2K ("v3", as used by the Kirby Air Riders amiibo).
 set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
@@ -64,6 +63,9 @@ check_sample() {
 
 # NTAG215: 135 pages = 540 bytes.
 check_sample "Yarn" "$ROOT/samples/Yarn.nfc" 540
+
+# NTAG I2C Plus 1K (v2 data, standard offsets): 236 pages = 944 bytes.
+check_sample "Yoshi" "$ROOT/samples/Yoshi_egg.nfc" 944
 
 # NTAG I2C Plus 2K ("v3"): Flipper dump is 492 pages = 1968 bytes.
 check_sample "Kirby" "$ROOT/samples/Kirby.nfc" 1968
