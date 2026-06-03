@@ -14,6 +14,13 @@
 #include <errno.h>
 
 #define NTAG215_SIZE 540
+#define NTAG_I2C_2K_SIZE 2048
+
+// NTAG I2C Plus 2K ("v3", e.g. Kirby Air Riders) dumps are much larger than a
+// 540-byte NTAG215 dump. The Flipper-derived variant is 1968 bytes and the full
+// sector 0+1 image is 2048; both sit well above this threshold, while the
+// 944-byte NTAG I2C Plus 1K dump stays below it.
+#define TAG_V3_MIN_SIZE 1024
 
 static char * self;
 
@@ -85,8 +92,8 @@ int main(int argc, char ** argv) {
 		return 5;
 	}
 
-	uint8_t original[NTAG215_SIZE];
-	uint8_t modified[NFC3D_AMIIBO_SIZE];
+	uint8_t original[NTAG_I2C_2K_SIZE];
+	uint8_t modified[NTAG_I2C_2K_SIZE];
 
 	FILE * f = stdin;
 	if (infile) {
@@ -96,28 +103,56 @@ int main(int argc, char ** argv) {
 			return 3;
 		}
 	}
-	size_t readPages = fread(original, 4, NTAG215_SIZE / 4, f);
+	size_t readPages = fread(original, 4, NTAG_I2C_2K_SIZE / 4, f);
 	if (readPages < NFC3D_AMIIBO_SIZE / 4) {
 		fprintf(stderr, "Could not read from input: %s (%d)\n", strerror(errno), errno);
 		return 3;
 	}
 	fclose(f);
 
+	size_t readBytes = readPages * 4;
+	bool tag_v3 = readBytes >= TAG_V3_MIN_SIZE;
 
 	if (op == 'e') {
-		nfc3d_amiibo_pack(&amiiboKeys, original, modified);
+		if (tag_v3) {
+			// The decrypted v3 image keeps the on-tag layout. Preserve the
+			// whole tag (random block, config, SRAM, trailing) and let pack
+			// overwrite only the encrypted amiibo regions.
+			uint8_t plain[NFC3D_AMIIBO_SIZE];
+			nfc3d_amiibo_tag_to_internal(original, plain, true);
+			memcpy(modified, original, readBytes);
+			nfc3d_amiibo_pack(&amiiboKeys, plain, modified, true);
+		} else {
+			nfc3d_amiibo_pack(&amiiboKeys, original, modified, false);
+			memcpy(modified + NFC3D_AMIIBO_SIZE, original + NFC3D_AMIIBO_SIZE, readBytes - NFC3D_AMIIBO_SIZE);
+		}
 	} else if (op == 'd') {
-		if (!nfc3d_amiibo_unpack(&amiiboKeys, original, modified)) {
+		uint8_t plain[NFC3D_AMIIBO_SIZE];
+		if (!nfc3d_amiibo_unpack(&amiiboKeys, original, plain, tag_v3)) {
 			fprintf(stderr, "!!! WARNING !!!: Tag signature was NOT valid\n");
 			if (!lenient) {
 				return 6;
 			}
 		}
+		if (tag_v3) {
+			// Decrypt in place within the v3 tag layout, preserving everything
+			// outside the encrypted amiibo regions.
+			memcpy(modified, original, readBytes);
+			nfc3d_amiibo_internal_to_tag(plain, modified, true);
+		} else {
+			memcpy(modified, plain, NFC3D_AMIIBO_SIZE);
+			memcpy(modified + NFC3D_AMIIBO_SIZE, original + NFC3D_AMIIBO_SIZE, readBytes - NFC3D_AMIIBO_SIZE);
+		}
 	} else { /* copy */
+		if (tag_v3) {
+			fprintf(stderr, "Copy (-c) is not supported for NTAG I2C Plus 2K tags\n");
+			return 7;
+		}
+
 		uint8_t plain_base[NFC3D_AMIIBO_SIZE];
 		uint8_t plain_save[NFC3D_AMIIBO_SIZE];
 
-		if (!nfc3d_amiibo_unpack(&amiiboKeys, original, plain_base)) {
+		if (!nfc3d_amiibo_unpack(&amiiboKeys, original, plain_base, false)) {
 			fprintf(stderr, "!!! WARNING !!!: Tag signature was NOT valid\n");
 			if (!lenient) {
 				return 6;
@@ -130,14 +165,15 @@ int main(int argc, char ** argv) {
 				return 3;
 			}
 		}
-		size_t readPages = fread(original, 4, NTAG215_SIZE / 4, f);
+		readPages = fread(original, 4, NTAG_I2C_2K_SIZE / 4, f);
 		if (readPages < NFC3D_AMIIBO_SIZE / 4) {
 			fprintf(stderr, "Could not read from save: %s (%d)\n", strerror(errno), errno);
 			return 3;
 		}
 		fclose(f);
+		readBytes = readPages * 4;
 
-		if (!nfc3d_amiibo_unpack(&amiiboKeys, original, plain_save)) {
+		if (!nfc3d_amiibo_unpack(&amiiboKeys, original, plain_save, false)) {
 			fprintf(stderr, "!!! WARNING !!!: Tag signature was NOT valid\n");
 			if (!lenient) {
 				return 6;
@@ -145,7 +181,8 @@ int main(int argc, char ** argv) {
 		}
 
 		nfc3d_amiibo_copy_app_data(plain_save, plain_base);
-		nfc3d_amiibo_pack(&amiiboKeys, plain_base, modified);
+		nfc3d_amiibo_pack(&amiiboKeys, plain_base, modified, false);
+		memcpy(modified + NFC3D_AMIIBO_SIZE, original + NFC3D_AMIIBO_SIZE, readBytes - NFC3D_AMIIBO_SIZE);
 	}
 
 	f = stdout;
@@ -156,15 +193,9 @@ int main(int argc, char ** argv) {
 			return 4;
 		}
 	}
-	if (fwrite(modified, NFC3D_AMIIBO_SIZE, 1, f) != 1) {
+	if (fwrite(modified, readBytes, 1, f) != 1) {
 		fprintf(stderr, "Could not write to output: %s (%d)\n", strerror(errno), errno);
 		return 4;
-	}
-	if (readPages > NFC3D_AMIIBO_SIZE / 4) {
-		if (fwrite(original + NFC3D_AMIIBO_SIZE, readPages * 4 - NFC3D_AMIIBO_SIZE, 1, f) != 1) {
-			fprintf(stderr, "Could not write to output: %s (%d)\n", strerror(errno), errno);
-			return 4;
-		}
 	}
 	fclose(f);
 
